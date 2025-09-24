@@ -1,0 +1,404 @@
+---
+title: "ggplot2 4.0.0 で遊んでみる"
+Author: "Hidehito Okada"
+link-external-newwindow: true
+date: today
+date-format: long
+format:
+  html:
+    theme: Cosmo
+    highlight-style: nord
+    mainfont: Noto Sans CJK JP
+    monofont: Monaspace Neon Var
+    code-copy: true
+    toc-depth: 3
+    number-depth: 2
+    self-contained: true
+    search: true
+toc: true
+knitr:
+  opts_chunk:
+    fig.path: "images/"
+  opts_knit:
+    base.url: "/"
+execute:
+  echo: true
+---
+
+タイトルの通り、ggplot2 4.0.0 がリリースされたので色々遊んでみる、自分が興味があるところだけ抜粋しているので全部置ききれているわけではないです。もし誤りなどありましたらご指摘ください。
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(
+  message = FALSE,
+  dev = "ragg_png",  
+  dpi = 300 
+)
+```
+
+```{r load}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(palmerpenguins)
+
+packageVersion("ggplot2")
+```
+
+## **テーマ関連**
+
+### Ink & paper
+
+`ink`/`paper`/`accent` という新しい色の概念が導入された。色の管理を、foreground (= ink)/background (= paper)/accent に分けて感がるという理念のもとに実装された。また同時に、`element_geom()` という新しいテーマ要素が導入され、geomの塗りや色をテーマで一括管理できるようになった。
+
+```{r theme, warning = FALSE}
+p <- ggplot(penguins, aes(species, bill_length_mm)) +
+  geom_boxplot()
+
+p1 <- p + theme_gray() + labs(title = "Default")
+p2 <- p + theme_gray(paper = "cornsilk") + labs(title = 'paper = "cornsilk"')
+p3 <- p + theme_gray(ink = "navy") + labs(title = 'ink = "navy"')
+p4 <- p + theme_gray(paper = "cornsilk", ink = "navy") + labs(title = 'paper = "cornsilk" & ink = "navy"')
+
+(p1 + p2) / (p3 + p4)
+```
+
+ink と paper のどちらになるかは geom の種類による。
+
+> A boxplot is unreadable without `colour`, but is perfectly interpretable without `fill`. In the boxplot case, the `ink` is thus clearly the `colour` whereas `paper` is the `fill`. In bar charts or histograms, the [proportional ink](https://clauswilke.com/dataviz/proportional-ink.html) principle prescribes that the `fill` aesthetic is considered foreground, and thus count as `ink` . ([公式ブログ記事](https://www.tidyverse.org/blog/2025/09/ggplot2-4-0-0/)より抜粋)
+
+とのことなので慣れるまではちょっとかかりそうではある。個別に geom だけ変更したい場合は、`element_geom()` を使う。
+
+```{r element_geom, warning = FALSE}
+p + theme(geom = element_geom(paper = "cornsilk", ink = "navy"))
+```
+
+パネルなどの色は paper と ink の色のミックスが表示されるためちょっとややこしい。内部的には `col_mix()` で実装されている (現実の混色とはやり方が違うので注意、参考: [ggplot2のinkとpaperの色は「混ざる」わけじゃないよ](https://zenn.dev/paithiov909/articles/ink-and-paper-settings){.uri}）。ただ、関数によってミックスされる場合とそうでない場合があるのでいまいち基準がわからない[^1]。
+
+[^1]: おそらくパネルとパネル上に表示される geom で `paper` がコントロールする部分の表示が該当しそうではあるが、例外もあるのでよくわからん...
+
+また、特殊なものとして `accent` がある。`accent` の影響を受ける代表的なものは公式ブログによると `geom_smooth()` と `geom_contour()`、あとは `geom_quantile()` とかも該当するみたい。なお、geom\_ 側で colour が設定されている場合はそっちが優先される[^2]。
+
+[^2]: 内部的には `from_theme(colour %||% accent)` で設定されているので、`colour` がデフォルト値の場合は `accent` を使用するようになっている。
+
+```{r smooth}
+ggplot(mpg, aes(displ, hwy)) +
+   geom_smooth() +
+   theme_grey(accent = "red")
+
+# colour が設定されている場合はそちらが優先される
+ggplot(mpg, aes(displ, hwy)) +
+   geom_smooth(colour = "blue") +
+   theme_grey(accent = "red")
+```
+
+### その他
+
+`theme` に `spacing` と `margins` が新しいルート要素として導入された。何気に便利なのが `rel()` と `margin_auto()`・`margin_part()`。`rel()` を用いると親から継承した値を相対値で変更できる[^3]。axis.ticks.length のデフォルト値は rel(0.5) なので rel(2) にすると継承した値が2倍される。
+
+[^3]: rel() 自体は結構昔からあったが、unit に適用できる様になったのが今回のリリースということみたい。
+
+```{r spacing_margins}
+# 公式ブログ (https://www.tidyverse.org/blog/2025/09/ggplot2-4-0-0/) より
+p <- ggplot(penguins, aes(bill_length_mm, bill_depth_mm, colour = species)) +
+  geom_point(na.rm = TRUE)
+
+p + theme(
+  spacing = unit(1, "cm"), 
+  margins = margin_auto(1, unit = "cm"),
+  axis.ticks.length.x = rel(2)
+)
+```
+
+また、`margin_auto()` は一括で全ての要素を指定でき、`margin_part()` は特定の要素のみを設定できる。これまでは全て指定しないといけなかったので便利になった。
+
+```{r margin}
+default <- margin_auto(10)
+default
+merge_element(margin_part(r = 20), default)
+```
+
+次に、データフレームにあらかじめ label attribute を付与することで、プロットに表示される変数名を調整できるようになった。これまでは直接変数名を上書きしないといけなかったので、後述の dictionary と合わせて便利。
+
+```{r attr}
+# attribute を付与する
+attr(penguins$species, "label") <- "Penguin Species"
+attr(penguins$bill_depth_mm, "label") <- "Bill depth (mm)"
+attr(penguins$bill_length_mm, "label") <- "Bill length (mm)"
+attr(penguins$body_mass_g, "label") <- "Body mass (g)"
+
+# 表示されるラベルが attribute を参照する
+# sqrt(body_mass) の部分は元の変数名と一致しないので変化なし
+ggplot(penguins, aes(bill_depth_mm, bill_length_mm, colour = sqrt(body_mass_g))) +
+  geom_point(na.rm = TRUE)
+
+# labs(dictionary = ) で一括で指定もできる
+dict <- tibble::tribble(
+  ~var,    ~label,
+  "species",  "Penguin Species",
+  "bill_depth_mm", "Bill depth (mm)",
+  "bill_length_mm", "Bill length (mm)",
+  "body_mass_g", "Body mass (g)"
+)
+
+ggplot(penguins, aes(bill_depth_mm, bill_length_mm, colour = body_mass_g)) +
+  geom_point(na.rm = TRUE) +
+  labs(dictionary = tibble::deframe(dict))
+```
+
+なお、属性は何らかの処理で失われることがあるので注意という旨が書かれている。例：`head(<data.frame>)` は属性を削除するが、`head(<tibble>)` では削除されない。
+
+ラベル優先順位の階層は以下のように決まっている。
+
+1.  `aes()` 内で指定された式
+2.  `labs(dictionary)` のエントリ
+3.  列のラベル属性
+4.  `labs(<aesthetic> = <label>)` の指定
+5.  `scale_*()` の name 引数
+6.  `guide_*()` の title 引数
+
+このため、下位の関数からは上位の関数での指定を参照できる。
+
+```{r label_hierarchy}
+# scale_x_continuous は labs の内容を参照して関数を適用できる
+ggplot(penguins, aes(bill_depth_mm, bill_length_mm, colour = body_mass_g)) +
+  geom_point(na.rm = TRUE) +
+  scale_x_continuous(name = toupper) +
+  labs(dictionary = tibble::deframe(dict)) 
+```
+
+## **Discrete scales**
+
+離散値は必ず「1 から水準数までの整数列」にマッピングされていたが、それ以外の設定もできる様になった。以下は島ごとに離れ離れにx軸を設定する例。
+
+```{r pallette_discreate}
+ggplot(penguins, aes(interaction(species, island, sep = "\n"), bill_length_mm)) +
+  geom_boxplot() +
+  scale_x_discrete(
+    palette = scales::pal_manual(c(1:2, 4:5, 7))
+  )
+```
+
+また、`continuous.limits` 引数によりプロット間やファセット間で limit を同期させることが簡単にできるようになった。
+
+```{r continuous limits}
+# 公式ブログより
+p1 <- ggplot(mpg, aes(class)) +
+  geom_bar() +
+  facet_wrap(~ drv, ncol = 1, scales = "free_x")
+
+p2 <- p1 + scale_x_discrete(continuous.limits = c(1, 5))
+
+(p1 + labs(title = "Free limits")) | 
+(p2 + labs(title = "Fixed limits"))
+```
+
+`sec.axis` 引数で、`dup_axis()` を使って副軸を指定できる。`dup_axis()` は主軸と同じ軸を複製する。
+
+```{r dup_axis}
+ggplot(penguins, aes(species, bill_length_mm)) +
+  geom_boxplot() +
+  scale_x_discrete(
+    sec.axis = dup_axis(
+      name = "Counts",
+      breaks = seq_len(length(unique(penguins$species))),
+      labels = paste0("n = ", table(penguins$species)) # サンプル数を表示する
+    )
+  )
+```
+
+## **Position aesthetics**
+
+position にも独自の aesthetic を宣言できるようになった。例えば `position_nudge()` においては、`nudge_x` と `nudge_y` パラメータが aesthetic となった。何が嬉しいかというと、 geom や stat の aesthetic のように、データをマッピングできるようになった。
+
+```{r position}
+# 公式ブログより
+coal <- tibble::tribble(
+  ~continent,  ~pct_1985, ~pct_2024,
+  "Africa",        53.87, 24.68,
+  "Asia",          32.60, 51.19,
+  "Europe",        32.84, 12.91,
+  "North America", 48.93, 13.79,
+  "South America",  2.91,  3.31,
+  "Oceania",       58.75, 39.26
+) |>
+  dplyr::mutate(pp_difference = pct_2024 - pct_1985)
+
+ggplot(coal, aes(pp_difference, continent)) +
+  geom_col() +
+  geom_text(
+    aes(nudge_x = sign(pp_difference) * 3, # sign で符号調整しつつ値をバーの隣に表示
+        label = pp_difference)
+  ) +
+  labs(x = "Change in electricity generated by coal (pp)")
+```
+
+こういうコードも動くようになる。
+
+```{r position2}
+penguins$species <- as.factor(penguins$species)
+mod <- lm(bill_length_mm ~ species, data = penguins, na.action = na.omit)
+p_values <- multcomp::glht(mod, linfct = multcomp::mcp(species = "Tukey")) |>
+  multcomp::cld()
+
+p_values_df <- tibble::enframe(p_values$mcletters$Letters, name = "species", value = "significance") 
+
+df <- left_join(penguins, p_values_df, by = "species") |>
+  summarise(
+    mean = mean(bill_length_mm, na.rm = T), 
+    sd = sd(bill_length_mm, na.rm = T), 
+    .by = c(species, significance)
+  )
+
+attr(df$mean, "label") <- "Bill length (mm)"
+
+ggplot(df, aes(species, mean)) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = .5) +
+  geom_point(size = 3, colour = "red") +
+  geom_text(
+    aes(nudge_y = sd + 1,
+        label = significance)
+  )
+
+# # これと同じ結果になる
+# ggplot(df, aes(species, mean)) +
+#   geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = .5) +
+#   geom_point(size = 3, colour = "red") +
+#   geom_text(
+#     aes(y = mean + sd + 1,
+#         label = significance)
+#   )
+```
+
+`position_dodge()` を使用する際に `order` を指定すると、データがない水準がある場合でも表示間隔と順番を維持して表示できるようになった。
+
+```{r order}
+p <- ggplot(penguins, aes(island, bill_length_mm, colour = species)) +
+  geom_boxplot(
+    width = .5,
+    position = position_dodge(preserve = "single")
+  ) +
+  labs(title = "order なし")
+
+p / (p + aes(order = species) + labs(title = "order あり"))
+```
+
+## **Facets**
+
+Facets 周りでは以下の機能追加があった。
+
+-   `facet_wrap()` にパネルを並べる向きを指定できる。これまでは4通りだったが、今回の機能追加で`dir`引数8通り指定できる様になった (`lt`, `tl`, `lb`, `bl`, `rt`, `tr`, `rb`, `br`)
+-   `facet_wrap()` に `space` 引数が追加 (行が1もしくは列が1の場合に機能)
+-   `facet_wrap()`・`facet_grid()` を使う際に `layer` が制御できる。facet の組み合わせで選択されなかったデータを表示するかしないかが調節される
+
+### **Layer layout**
+
+`facet_wrap()` と `facet_grid()` に関しては次のような解釈が用意されている。
+
+-   `layout = NULL`（デフォルト）: ファセット変数を使ってデータを各パネルに割り当てる
+
+-   `layout = "fixed"`: データをすべてのパネルで繰り返し、ファセット変数を無視する
+
+-   `layout = <integer>`: 特定のパネルにデータを割り当てる
+
+さらに、`facet_grid()` に特化したオプションも追加されている。
+
+-   `layout = "fixed_cols"`: 列ごとにデータをまとめ、その列のすべてのパネルで繰り返す
+
+-   `layout = "fixed_rows"`: 行ごとにデータをまとめ、その行のすべてのパネルで繰り返す
+
+下の例の場合は、fixed_rows で island ごとのデータは全てグレーで表示される。データに含まれる全体の集合をもしくはサブセットを共通して表示させたい時に便利そう。
+
+```{r layer_layout}
+ggplot(penguins, aes(bill_depth_mm, bill_length_mm)) +
+  geom_point(na.rm = TRUE, colour = "grey", layout = "fixed_rows") +
+  geom_point(na.rm = TRUE, layout = NULL) +
+  annotate(
+    "text", x = I(0.5), y = I(0.5),
+    label = "Panel 6", layout = 6
+  ) +
+  facet_grid(island ~ species)
+```
+
+## **Styling updates**
+
+-   `geom_boxplot()`・`geom_violin()`・ `geom_label()` に追加の引数が実装
+
+-   `geom_area()` ・`geom_ribbon()` がグループ内で fill を変更できるようになった
+
+-   `stat_manual()`・`stat_connect()` が実装
+
+`geom_boxplot()` の線や色のコントロールが柔軟になったのは嬉しい。`stat_manual()` も便利そう。
+
+## **New stats**
+
+`stat_manual()` が追加された。`stat_manual()` にはデータフレームを入力として受け取り、データフレームを返す任意の関数を与える。ただし、最終的に geom が必要とする aesthetic が揃っている必要がある。上手い使いこなし方が思いつかなかったが結構面白い機能だと思う。
+
+```{r stat_manual}
+# 以下は公式ブログの例
+make_centroids <- function(df) {
+  transform(
+    df,
+    xend = mean(x, na.rm = TRUE),
+    yend = mean(y, na.rm = TRUE)
+  )
+}
+
+make_hull <- function(df) {
+  df <- df[complete.cases(df), , drop = FALSE]
+  hull <- chull(df$x, df$y)
+  df[hull, , drop = FALSE]
+}
+
+ggplot(penguins, aes(bill_length_mm, bill_depth_mm, colour = species)) + 
+  geom_point(na.rm = TRUE) + 
+  # As a stat, provide a geom
+  stat_manual(
+    geom = "segment", # function creates new xend/yend for segment
+    fun = make_centroids,
+    linewidth = 0.2,
+    na.rm = TRUE
+  ) +
+  # As a geom, provide the stat
+  geom_polygon(
+    stat = "manual",
+    fun = make_hull,
+    fill = NA,
+    linetype = "dotted"
+  )
+```
+
+## **Coord reversal**
+
+coords に `reverse` 引数 が追加された。典型的には `"none",` `"x"`, `"y"`, `"xy"` を指定でき、対応する方向を反転できる。公式には coord_sf と組み合わせて地図を反転させる例があった。
+
+## **内部的な変更**
+
+S3 が S7 に置き換えられた。エンドユーザーにはあまり影響がなさそうだけどパッケージ開発者には影響があるかも。
+
+例:
+
+```{r s7}
+# S7 ではこっちが正しい
+ggplot()@data
+# 4.0.0 以前はこっち (後方互換のための維持)
+ggplot()$data
+```
+
+今のところは `$` でのアクセスも後方互換のために残してあるが、将来的には廃止予定とのこと。
+
+## **感想**
+
+メージャーアップデートだけあって機能追加が多い印象。実務的に便利そうな変更も結構あるので積極的に使っていきたい。内部的にはかなり大きな変更なので、拡張パッケージが影響を受けそうなのが気がかり[^4]。個人的には、scale 周りの機能追加が嬉しい。あと今回のリリースは18周年らしいです、めでたい。
+
+[^4]: Bioconductor とかではアナウンスもしているっぽい。<https://blog.bioconductor.org/posts/2025-07-07-ggplot2-update/index.html>
+
+## **参考**
+
+[ggplot2 4.0.0 公式ブログ記事](https://www.tidyverse.org/blog/2025/09/ggplot2-4-0-0/)
+
+[Github レポジトリ](https://github.com/tidyverse/ggplot2)
+
+[ggplot2のinkとpaperの色は「混ざる」わけじゃないよ](https://zenn.dev/paithiov909/articles/ink-and-paper-settings)
+
+[Bioconductor and ggplot2 4.0.0: What’s Changing and How to Prepare](https://blog.bioconductor.org/posts/2025-07-07-ggplot2-update/index.html)
